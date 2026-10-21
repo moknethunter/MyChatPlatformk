@@ -1,26 +1,71 @@
 name: Build APK
 on: [push]
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with: 
+      - uses: actions/setup-dotnet@v4
+        with:
           dotnet-version: '8.0.x'
       
-      - name: Install MAUI
-        run: dotnet workload install maui android
+      - name: Install MAUI Workload
+        run: dotnet workload install maui --ignore-failed-sources
 
-      - name: Build Only Mobile Project
-        run: dotnet build MyChatPlatformk.Mobile/MyChatPlatformk.Mobile.csproj -f net8.0-android -c Release --no-restore
-        # مهم: ما نعمل dotnet test ابدا
+      - name: Create MAUI Project
+        run: |
+          dotnet new maui -n MyChatApp -o MyChatApp
+          cd MyChatApp
+          dotnet add package Microsoft.EntityFrameworkCore.InMemory --version 8.0.0
+          dotnet add package Microsoft.AspNetCore.SignalR.Client --version 8.0.0
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: MyChatPlatformk-APK
-          path: MyChatPlatformk.Mobile/bin/Release/net8.0-android/**/*.apk
+      - name: Inject Chat Server Code
+        shell: pwsh
+        run: |
+          @'
+          using Microsoft.EntityFrameworkCore;
+          using Microsoft.AspNetCore.SignalR;
+          using Microsoft.AspNetCore.Builder;
+          using Microsoft.Extensions.DependencyInjection;
+          using Microsoft.AspNetCore.Http;
+          namespace MyChatApp;
+          public static class MauiProgram
+          {
+              public static MauiApp CreateMauiApp()
+              {
+                  var builder = MauiApp.CreateBuilder();
+                  builder.UseMauiApp<App>();
+                  builder.Services.AddSingleton<ChatServer>();
+                  builder.Services.AddSingleton<MainPage>();
+                  return builder.Build();
+              }
+          }
+          public class ChatServer
+          {
+              WebApplication? app;
+              public void Start()
+              {
+                  var t = new Thread(() =>
+                  {
+                      var b = WebApplication.CreateBuilder();
+                      b.Services.AddDbContext<ChatDbContext>(o => o.UseInMemoryDatabase("ChatDb"));
+                      b.Services.AddSignalR();
+                      b.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin().SetIsOriginAllowed(_ => true)));
+                      b.Services.AddSingleton<IExternalChannelProvider, NoOpChannelProvider>();
+                      var web = b.Build();
+                      web.UseCors();
+                      web.MapHub<ChatHub>("/hubs/chat");
+                      web.MapPost("/api/conversations", async (ChatDbContext db, string title) => { var c = new Conversation { Id = Guid.NewGuid(), Title = title, CreatedAt = DateTime.UtcNow }; db.Conversations.Add(c); await db.SaveChangesAsync(); return Results.Ok(c); });
+                      web.MapGet("/api/conversations", async (ChatDbContext db) => await db.Conversations.ToListAsync());
+                      web.MapPost("/api/messages", async (ChatDbContext db, IHubContext<ChatHub> hub, SendMessageRequest req) => { var m = new Message { Id = Guid.NewGuid(), ConversationId = req.ConversationId, Content = req.Content, SenderId = req.SenderId ?? "me", Channel = "Internal", CreatedAt = DateTime.UtcNow }; db.Messages.Add(m); await db.SaveChangesAsync(); await hub.Clients.Group(req.ConversationId.ToString()).SendAsync("NewMessage", m); return Results.Ok(m); });
+                      web.MapGet("/api/conversations/{id}/messages", async (Guid id, ChatDbContext db) => await db.Messages.Where(x => x.ConversationId == id).OrderBy(x => x.CreatedAt).ToListAsync());
+                      web.Urls.Add("http://0.0.0.0:5000");
+                      app = web; web.Run();
+                  });
+                  t.IsBackground = true; t.Start();
+              }
+          }
+          public class Conversation { public Guid Id { get; set; } public string Title { get; set; } = ""; public DateTime CreatedAt { get; set; } }
+          public class Message { public Guid Id { get; set; } public Guid ConversationId { get; set; } public string Content { get; set; } = ""; public string SenderId { get; set; } = ""; public string Channel { get; set; } = "Internal"; public string? ExternalId { get; set; } public DateTime CreatedAt
