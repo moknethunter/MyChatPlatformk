@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui" x:Class="MyChatPlatformk.Mobile.MainPage">
+    <Grid RowDefinitions="Auto,*,Auto" Padding="10">
+        <Label Text="MyChatPlatformk - بدون سيرفر" FontSize="18" FontAttributes="Bold" HorizontalOptions="Center"/>
+        <ScrollView Grid.Row="1"><VerticalStackLayout x:Name="MessagesStack" /></ScrollView>
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto"><Entry x:Name="MessageEntry" Placeholder="اكتب..." /><Button Grid.Column="1" Text="ارسال" Clicked="OnSendClicked" /></Grid>
+    </Grid>
+</ContentPage>
